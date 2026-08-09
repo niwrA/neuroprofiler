@@ -31,10 +31,12 @@ const activeGroup = ref('all')
 const detailStat = ref(null)
 const checkinOpen = ref(false)
 const savedNotice = ref('')
+const interpretationFilter = ref('all')
 const wearable = reactive({ loaded: false, name: '', size: 0, updated: '', metrics: [] })
 
 const navItems = [
   { id: 'map', label: 'My map' },
+  { id: 'patterns', label: 'Strengths & challenges' },
   { id: 'compare', label: 'Compare profiles' },
   { id: 'worlds', label: 'Different worlds' },
   { id: 'rhythms', label: 'Observed rhythms' },
@@ -118,6 +120,43 @@ const followUpIndicators = computed(() => [
   { id:'autistic-patterns', title:'Autistic-style sensory/social patterns', signal:'A combination, never one score', active:scores.sensitivity>=75 && scores.filtering<=45 && (scores.change<=45 || scores.directness>=75), detail:'A future follow-up could explore lifelong sensory, communication, routine and interest patterns. This map alone cannot indicate autism.' },
   { id:'energy', title:'Recovery & sustainable demand', signal:'Recovery speed plus context shifts', active:scores.recovery<=40, detail:'Explore whether cognitive, social or sensory effort predicts delayed fatigue, and which forms of rest actually restore usable capacity.' },
 ])
+
+function resultScore(statId) { return acrossContextScore(statId) ?? scores[statId] }
+function measuredContextValues(statId) { return measuredContexts.value.map(context => ({ context, value: contextScores[context.id]?.[statId] })).filter(item => item.value !== undefined) }
+function evidenceFor(statIds) {
+  const values = statIds.flatMap(statId => measuredContextValues(statId).map(item => item.value))
+  if (!values.length) return { label: 'General-self indication', confidence: 'early' }
+  const spread = Math.max(...values) - Math.min(...values)
+  return spread >= 20 ? { label: 'Strongly context-dependent', confidence: 'context' } : measuredContexts.value.length >= 2 ? { label: `Supported across ${measuredContexts.value.length} contexts`, confidence: 'supported' } : { label: 'One context measured', confidence: 'early' }
+}
+function contextExtremes(statId) {
+  const values = measuredContextValues(statId).sort((a,b) => b.value - a.value)
+  if (values.length < 2) return null
+  return { high: values[0], low: values[values.length - 1], gap: values[0].value - values[values.length - 1].value }
+}
+const interpretationPatterns = computed(() => {
+  const score = resultScore
+  const patterns = [
+    { id:'deep-work', title:'Deep work engine', icon:'◉', active:score('focus')>=68, stats:['focus','switching'], strength:'You may sustain attention long enough to build, investigate or refine work that rewards continuity.', challenge:score('switching')<=48 ? 'Interruptions may erase momentum and require reconstruction time that others cannot see.' : 'Long focus may still narrow awareness of time, messages or physical needs.', supports:['Protected focus blocks','A visible place to park the current thread','Batching questions and messages'], watch:'Notice whether depth remains useful or turns into difficulty disengaging.' },
+    { id:'systems', title:'Systems and fine grain', icon:'⌘', active:score('bigPicture')>=68 && score('detail')>=68, stats:['bigPicture','detail'], strength:'You may connect an overall model with small inconsistencies—useful for architecture, diagnosis, design and quality work.', challenge:'Seeing both system and detail can expand the problem, increase checking or make “good enough” closure harder.', supports:['Define the decision before exploring','Separate discovery from delivery','Agree what level of precision matters'], watch:'Check whether additional detail is still changing the decision.' },
+    { id:'discovery', title:'Discovery drive', icon:'✦', active:score('curiosity')>=72, stats:['curiosity','finishing','starting'], strength:'Questions, novelty and unexplained patterns may generate energy and unusually broad learning.', challenge:score('finishing')<=52 || score('starting')<=45 ? 'Interesting side paths may compete with starting or closing necessary work.' : 'High curiosity can still create too many simultaneous commitments.', supports:['Keep a question parking lot','Give exploration a time boundary','Pair novelty with a clear finish condition'], watch:'Distinguish useful exploration from avoidance of the current task.' },
+    { id:'careful-launch', title:'Careful launch', icon:'↗', active:score('planning')-score('starting')>=18, stats:['planning','starting'], strength:'Once moving, you may bring foresight, sequencing and awareness of dependencies that prevent avoidable mistakes.', challenge:'The first concrete action may need more activation than the later planning and execution suggest.', supports:['Define a two-minute first action','Use an external start cue','Let a rough prototype precede the complete plan'], watch:'A slow start is not the same as low motivation or low capability.' },
+    { id:'sensitivity', title:'High-resolution sensing', icon:'≈', active:score('sensitivity')>=68, stats:['sensitivity','filtering','recovery'], strength:'Subtle sensory, emotional or interpersonal changes may become available earlier and in greater detail.', challenge:score('filtering')<=50 ? 'Busy environments may keep too many signals foregrounded, increasing effort and delayed fatigue.' : 'Even with good filtering, sustained intensity may accumulate before it becomes obvious.', supports:['Control one sensory channel','Choose lower-density environments for complex work','Schedule recovery before capacity is exhausted'], watch:'Sensitivity can increase responsiveness to supportive as well as difficult environments.' },
+    { id:'people-model', title:'Perspective builder', icon:'◇', active:score('perspective')>=70, stats:['perspective','expressing','directness'], strength:'You may construct several plausible viewpoints and anticipate how information will land with different people.', challenge:'Modelling many perspectives can delay your own position, create over-responsibility or make a direct boundary harder.', supports:['State your own need before modelling others','Ask rather than infer when possible','Separate understanding from agreement'], watch:'Perspective taking is useful evidence, not mind-reading.' },
+    { id:'autonomy', title:'Autonomy and meaning', icon:'△', active:score('independence')>=70 || score('purpose')>=75, stats:['independence','purpose','structure'], strength:'Ownership and a credible reason may unlock persistence, invention and unusually high commitment.', challenge:'Close control, arbitrary process or work disconnected from values may create friction disproportionate to task difficulty.', supports:['Agree outcomes, constraints and decision rights','Connect routine work to a concrete beneficiary','Ask which rules are fixed and which are negotiable'], watch:'Low engagement can reflect fit, but may also reflect fatigue, health or unclear expectations.' },
+    { id:'steady', title:'Endurance with a recovery bill', icon:'∞', active:score('persistence')>=72, stats:['persistence','recovery'], strength:'You may continue through difficult middles after novelty and immediate reward have disappeared.', challenge:score('recovery')<=48 ? 'Visible persistence may conceal a delayed recovery cost and make overextension look sustainable.' : 'Persistence can still keep an outdated goal alive longer than needed.', supports:['Define stopping rules in advance','Track capacity after effort, not only during it','Review whether the goal still deserves persistence'], watch:'Capability during demand does not measure the cost paid afterward.' },
+    { id:'predictability', title:'Prepared adaptability', icon:'□', active:score('structure')>=68 || score('change')<=45, stats:['structure','change','planning'], strength:'Clear expectations and advance preparation may free attention for high-quality execution.', challenge:'Late ambiguity or unexpected changes may require rebuilding a mental model before performance returns.', supports:['Make ownership and success criteria explicit','Signal likely changes early','Provide a revised sequence, not only a new destination'], watch:'Needing a transition is different from being unable to adapt.' },
+    { id:'social-range', title:'Contextual social range', icon:'◌', active:(contextExtremes('sociability')?.gap||0)>=18 || (contextExtremes('expressing')?.gap||0)>=18, stats:['sociability','expressing','directness'], strength:'Different relationships may unlock substantially different levels of connection, expression and directness.', challenge:'Others may see only one version of you, while adaptation or recovery costs remain private.', supports:['Name the formats in which expression is easiest','Allow preparation or written follow-up','Do not use one social setting as proof of universal capacity'], watch:'Variation may reflect trust, role, group size, sensory load or learned adaptation.' },
+  ]
+  return patterns.filter(pattern => pattern.active).map(pattern => ({ ...pattern, evidence:evidenceFor(pattern.stats), extremes:pattern.stats.map(id => ({ id, data:contextExtremes(id) })).find(item => item.data?.gap >= 12) }))
+})
+const visibleInterpretationPatterns = computed(() => interpretationPatterns.value.filter(pattern => {
+  if (interpretationFilter.value === 'all') return true
+  if (interpretationFilter.value === 'context') return pattern.evidence.confidence === 'context' || pattern.extremes
+  if (interpretationFilter.value === 'strength') return true
+  if (interpretationFilter.value === 'challenge') return true
+  return true
+}))
 
 const visibleStats = computed(() => activeGroup.value === 'all' ? stats : stats.filter(s => s.group === activeGroup.value))
 const standoutStats = computed(() => [...stats].sort((a, b) => scores[b.id] - scores[a.id]).slice(0, 4))
@@ -456,6 +495,7 @@ function exportProfile() {
       contextSetupCompleted: contextSetupCompleted.value,
       acrossContextBaseline: stats.map(stat => ({ construct: stat.id, value: acrossContextScore(stat.id), scale: { min: 0, max: 100 } })).filter(item => item.value !== null),
       contextWeights: { ...contextWeights },
+      interpretations: interpretationPatterns.value.map(pattern => ({ id: pattern.id, title: pattern.title, evidence: pattern.evidence, constructs: pattern.stats, strength: pattern.strength, challenge: pattern.challenge, causalClaim: false })),
     },
     provenance: { applicationVersion: '0.1.0', constructRegistry: '0.1.0' },
     privacy: { rawResponsesIncluded: false, rawWearableIncluded: false, locationIncluded: false, exactTimestampsIncluded: false },
@@ -655,7 +695,7 @@ watch(contextWeights, () => { if (!hydratingProfile) saveLocal('') }, { deep: tr
       <section v-else-if="screen === 'map'" class="dashboard-view">
         <div class="dashboard-heading">
           <div><p class="eyebrow">Your general map</p><h1>A whole person,<br><em>not a label.</em></h1></div>
-          <div class="heading-actions"><button class="secondary" @click="beginAssessment">Retake map</button><button class="primary" @click="exportProfile">Export JSON ↓</button></div>
+          <div class="heading-actions"><button class="secondary" @click="go('patterns')">Strengths & challenges</button><button class="secondary" @click="beginAssessment">Retake map</button><button class="primary" @click="exportProfile">Export JSON ↓</button></div>
         </div>
         <div class="summary-card">
           <div class="summary-copy">
@@ -725,6 +765,33 @@ watch(contextWeights, () => { if (!hydratingProfile) saveLocal('') }, { deep: tr
           <article class="insight-card dark"><span>Context insight</span><h3>Your focus is deep, but interruptions may have a {{ reloadCost }}% reload cost.</h3><button @click="go('worlds')">Explore different worlds →</button></article>
           <article class="insight-card paper"><span>Energy economy</span><h3>Purpose and independence look energising. Rapid recovery may need more support.</h3><button @click="go('rhythms')">Open observed rhythms →</button></article>
         </div>
+      </section>
+
+      <section v-else-if="screen === 'patterns'" class="patterns-view">
+        <div class="patterns-hero"><div><p class="eyebrow">Interpretation layer</p><h1>Potential strengths.<br><em>Possible friction.</em></h1><p>Each pattern combines several results and shows both sides of the same tendency. These are hypotheses to test against experience—not verdicts, diagnoses or predictions of success.</p></div><div class="interpretation-status"><span>Evidence currently available</span><b>{{ activeProfile?.completed ? 'General self' : 'No completed general map' }}</b><b>{{ measuredContexts.length }} measured context{{ measuredContexts.length===1?'':'s' }}</b><small>{{ measuredContexts.length >= 2 ? 'Context-supported interpretation is available.' : 'Complete two or more contexts to distinguish stable and situation-dependent patterns.' }}</small></div></div>
+
+        <div v-if="!activeProfile?.completed && !measuredContexts.length" class="patterns-empty"><span>Start with evidence</span><h2>Complete the guided mapping before interpreting results.</h2><p>Strengths and challenges should not be inferred from the example scores shown in an unfinished profile.</p><button class="primary" @click="startJourney">Start guided mapping →</button></div>
+        <template v-else>
+          <div class="interpretation-controls"><div><button v-for="filter in [{id:'all',label:'Balanced view'},{id:'strength',label:'Strengths'},{id:'challenge',label:'Challenges'},{id:'context',label:'Context shifts'}]" :key="filter.id" :class="{active:interpretationFilter===filter.id}" @click="interpretationFilter=filter.id">{{ filter.label }}</button></div><span>{{ visibleInterpretationPatterns.length }} patterns currently supported</span></div>
+
+          <div class="pattern-cards">
+            <article v-for="pattern in visibleInterpretationPatterns" :key="pattern.id" class="pattern-card" :class="[`confidence-${pattern.evidence.confidence}`, `view-${interpretationFilter}`]">
+              <div class="pattern-card-head"><span>{{ pattern.icon }}</span><div><small>{{ pattern.evidence.label }}</small><h2>{{ pattern.title }}</h2></div></div>
+              <div class="pattern-two-sides">
+                <section v-if="interpretationFilter!=='challenge'"><span>Potential strength</span><p>{{ pattern.strength }}</p></section>
+                <section v-if="interpretationFilter!=='strength'"><span>Possible challenge</span><p>{{ pattern.challenge }}</p></section>
+              </div>
+              <div v-if="pattern.extremes" class="pattern-context-note"><b>Context signal</b><p>{{ stats.find(s=>s.id===pattern.extremes.id)?.label }} is {{ pattern.extremes.data.gap }} points higher in {{ pattern.extremes.data.high.context.label.toLowerCase() }} than {{ pattern.extremes.data.low.context.label.toLowerCase() }}. Treat the setting as part of the pattern.</p></div>
+              <div class="pattern-supports"><span>Conditions worth testing</span><ul><li v-for="support in pattern.supports" :key="support">{{ support }}</li></ul></div>
+              <div class="pattern-evidence"><span v-for="statId in pattern.stats" :key="statId">{{ stats.find(s=>s.id===statId)?.label }} <b>{{ resultScore(statId) }}</b></span></div>
+              <p class="pattern-watch"><b>Keep in mind:</b> {{ pattern.watch }}</p>
+            </article>
+          </div>
+
+          <div v-if="nextContext" class="interpretation-next"><div><span class="section-kicker">Improve this interpretation</span><h2>Measure {{ nextContext.label.toLowerCase() }} next.</h2><p>Another completed context can show whether these patterns remain stable, intensify or reverse in that setting.</p></div><button class="primary" @click="startContextAssessment(nextContext.id)">Start next context →</button></div>
+
+          <div class="interpretation-method"><div><span class="section-kicker">How these statements are made</span><h2>No score is inherently a strength or a problem.</h2></div><div><p>Cards appear only when a combination crosses a provisional rule. General self provides an early indication; measured contexts show whether it repeats or varies. A challenge describes likely friction under certain demands—not a defect in the person.</p><p>The interpretation follows a person–environment-fit and strengths-based direction. Public use still requires validation of thresholds, false-positive testing, lived-experience review and clear governance for consequential use.</p><div><a href="https://pmc.ncbi.nlm.nih.gov/articles/PMC9978378/" target="_blank" rel="noreferrer">Strengths-based environments ↗</a><a href="https://pmc.ncbi.nlm.nih.gov/articles/PMC8584340/" target="_blank" rel="noreferrer">Sensitivity in supportive and difficult settings ↗</a><a href="https://pmc.ncbi.nlm.nih.gov/articles/PMC10430771/" target="_blank" rel="noreferrer">Neurodiversity-affirming framework ↗</a></div></div></div>
+        </template>
       </section>
 
       <section v-else-if="screen === 'compare'" class="compare-profiles-view">

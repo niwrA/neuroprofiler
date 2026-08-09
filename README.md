@@ -32,6 +32,9 @@ The production output is written to `dist/` and can be served by any static host
 - Twelve tailored scenario questions per applicable context, stored separately per profile
 - Weighted across-context baseline with user-adjustable ordinary-life exposure
 - Official Garmin, Apple Health and Google Fit export guidance
+- Separate strengths-and-challenges interpretation page with dual-sided pattern rules
+- Evidence labels distinguishing general-self, context-supported and context-dependent indications
+- Environment-support experiments and interpretation provenance included in JSON export
 - Guided sequence: context description, general baseline, then the next unfinished context
 - Context-specific scenes for work, learning, home, social circles, relationships and holidays
 - Construct-aligned prompts: every scene ends with the precise question its four anchored answers address
