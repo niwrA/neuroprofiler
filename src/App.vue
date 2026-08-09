@@ -18,6 +18,7 @@ const assessmentAnswers = reactive({})
 const contextIntake = reactive({ workType: 'knowledge', workSetting: 'shared', learningType: 'self', living: 'alone', relationship: 'none', friendsPattern: 'small' })
 const contextAnswers = reactive({})
 const contextScores = reactive({})
+const contextWeights = reactive({})
 const contextAssessmentId = ref('work')
 const contextAssessmentIndex = ref(0)
 const contextSetupCompleted = ref(false)
@@ -68,12 +69,31 @@ const activeContextQuestion = computed(() => {
   const scene = contextScenes[context?.id]?.[statId] || contextPrompt(statId, context)
   return { stat: statId, text: `${scene} ${contextQuestionEnds[statId] || ''}`.trim(), options: contextResponseOptions[statId] }
 })
-const unfinishedContexts = computed(() => availableContexts.value.filter(context => context.id !== 'self' && !contextScores[context.id]))
+function isContextComplete(contextId) { return contextQuestionStats.every(statId => contextScores[contextId]?.[statId] !== undefined) }
+const unfinishedContexts = computed(() => availableContexts.value.filter(context => context.id !== 'self' && !isContextComplete(context.id)))
 const nextContext = computed(() => unfinishedContexts.value[0] || null)
-const completedContextCount = computed(() => availableContexts.value.filter(context => context.id !== 'self' && contextScores[context.id]).length)
+const completedContextCount = computed(() => availableContexts.value.filter(context => context.id !== 'self' && isContextComplete(context.id)).length)
+const measuredContexts = computed(() => availableContexts.value.filter(context => context.id !== 'self' && isContextComplete(context.id)))
 const contextProgress = computed(() => {
   const total = availableContexts.value.filter(context => context.id !== 'self').length
   return { completed: completedContextCount.value, total, percentage: total ? Math.round(completedContextCount.value / total * 100) : 0 }
+})
+
+function acrossContextScore(statId) {
+  const measured = measuredContexts.value.filter(context => contextScores[context.id]?.[statId] !== undefined)
+  if (!measured.length) return null
+  const totalWeight = measured.reduce((sum, context) => sum + Number(contextWeights[context.id] || 1), 0)
+  return Math.round(measured.reduce((sum, context) => sum + contextScores[context.id][statId] * Number(contextWeights[context.id] || 1), 0) / totalWeight)
+}
+
+const baselineStats = computed(() => stats.map(stat => ({ stat, value: acrossContextScore(stat.id) })).filter(item => item.value !== null))
+const baselineMeanGap = computed(() => baselineStats.value.length ? Math.round(baselineStats.value.reduce((sum,item) => sum + Math.abs(item.value - scores[item.stat.id]), 0) / baselineStats.value.length) : null)
+const widestContextRange = computed(() => {
+  if (measuredContexts.value.length < 2) return null
+  return stats.map(stat => {
+    const values = measuredContexts.value.map(context => contextScores[context.id]?.[stat.id]).filter(value => value !== undefined)
+    return { stat, range: values.length > 1 ? Math.max(...values) - Math.min(...values) : 0 }
+  }).sort((a,b) => b.range - a.range)[0]
 })
 
 const contextDifferences = computed(() => stats.map(stat => ({
@@ -82,9 +102,9 @@ const contextDifferences = computed(() => stats.map(stat => ({
 })).sort((a,b) => Math.abs(b.delta) - Math.abs(a.delta)))
 const obviousDifferences = computed(() => contextDifferences.value.filter(item => Math.abs(item.delta) >= 14).slice(0, 5))
 const clearSimilarities = computed(() => contextDifferences.value.filter(item => Math.abs(item.delta) <= 5).slice(0, 5))
-const contextMeasured = computed(() => Boolean(contextScores[compareContext.value]))
+const contextMeasured = computed(() => isContextComplete(compareContext.value))
 const contextSpread = computed(() => Math.max(0, ...stats.map(stat => {
-  const values = availableContexts.value.filter(c => c.id !== 'self' && contextScores[c.id]).map(c => contextualScore(stat.id, c.id))
+  const values = availableContexts.value.filter(c => c.id !== 'self' && isContextComplete(c.id)).map(c => contextualScore(stat.id, c.id))
   return values.length ? Math.max(scores[stat.id], ...values) - Math.min(scores[stat.id], ...values) : 0
 })))
 
@@ -153,6 +173,14 @@ function profileRadarPolygon(profile, fraction = null) {
   }).join(' ')
 }
 
+function baselineRadarPolygon(fraction = null) {
+  return radarStats.map((stat, index) => {
+    const score = fraction === null ? (acrossContextScore(stat.id) ?? scores[stat.id]) : fraction * 100
+    const point = polarPoint(index, radarStats.length, 18 + score / 100 * 105)
+    return `${point.x},${point.y}`
+  }).join(' ')
+}
+
 function profileGroupScore(profile, groupId) {
   const members = stats.filter(stat => stat.group === groupId)
   return Math.round(members.reduce((sum, stat) => sum + (profile.scores?.[stat.id] ?? 50), 0) / members.length)
@@ -208,9 +236,10 @@ function answerContext(value) {
 function finishContextAssessment() {
   const contextId = contextAssessmentId.value
   contextScores[contextId] = { ...(contextScores[contextId] || {}), ...(contextAnswers[contextId] || {}) }
+  if (!contextWeights[contextId]) contextWeights[contextId] = 1
   lastCompletedContextId.value = contextId
   compareContext.value = contextId
-  const remaining = availableContexts.value.find(context => context.id !== 'self' && !contextScores[context.id])
+  const remaining = availableContexts.value.find(context => context.id !== 'self' && !isContextComplete(context.id))
   saveLocal(remaining ? `${contexts.find(c => c.id === contextId)?.label} complete · ${remaining.label} is next` : 'All available contexts are complete')
   screen.value = 'worlds'
 }
@@ -262,6 +291,7 @@ function syncActiveProfile() {
   profile.contextIntake = { ...contextIntake }
   profile.contextAnswers = JSON.parse(JSON.stringify(contextAnswers))
   profile.contextScores = JSON.parse(JSON.stringify(contextScores))
+  profile.contextWeights = { ...contextWeights }
   profile.contextSetupCompleted = contextSetupCompleted.value
   profile.updatedAt = new Date().toISOString()
 }
@@ -281,6 +311,8 @@ function switchProfile(id) {
   Object.assign(contextAnswers, target.contextAnswers || {})
   Object.keys(contextScores).forEach(key => delete contextScores[key])
   Object.assign(contextScores, target.contextScores || {})
+  Object.keys(contextWeights).forEach(key => delete contextWeights[key])
+  Object.assign(contextWeights, target.contextWeights || {})
   contextSetupCompleted.value = Boolean(target.contextSetupCompleted)
   hydratingProfile = false
   profileMenu.value = false
@@ -303,7 +335,7 @@ function createProfile() {
   const profile = {
     id: makeId(), name,
     scores: Object.fromEntries(stats.map(stat => [stat.id, 50])),
-    answers: {}, contextIntake: {}, contextAnswers: {}, contextScores: {}, contextSetupCompleted: false, completed: false,
+    answers: {}, contextIntake: {}, contextAnswers: {}, contextScores: {}, contextWeights: {}, contextSetupCompleted: false, completed: false,
     createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
   }
   syncActiveProfile()
@@ -388,7 +420,7 @@ function resetLocal() {
   if (!confirm('Erase every local profile from this browser and restore one anonymous example?')) return
   localStorage.removeItem('neuroprofile-v01')
   localStorage.removeItem('neuroprofile-profiles-v01')
-  const replacement = { id: makeId(), name: suggestProfileName(), scores: { ...defaults }, answers: {}, contextIntake: {}, contextAnswers: {}, contextScores: {}, contextSetupCompleted: false, completed: false, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }
+  const replacement = { id: makeId(), name: suggestProfileName(), scores: { ...defaults }, answers: {}, contextIntake: {}, contextAnswers: {}, contextScores: {}, contextWeights: {}, contextSetupCompleted: false, completed: false, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }
   profiles.value = [replacement]
   activeProfileId.value = replacement.id
   compareProfileIds.value = [replacement.id]
@@ -422,6 +454,8 @@ function exportProfile() {
       })),
       contextIntake: { ...contextIntake },
       contextSetupCompleted: contextSetupCompleted.value,
+      acrossContextBaseline: stats.map(stat => ({ construct: stat.id, value: acrossContextScore(stat.id), scale: { min: 0, max: 100 } })).filter(item => item.value !== null),
+      contextWeights: { ...contextWeights },
     },
     provenance: { applicationVersion: '0.1.0', constructRegistry: '0.1.0' },
     privacy: { rawResponsesIncluded: false, rawWearableIncluded: false, locationIncluded: false, exactTimestampsIncluded: false },
@@ -475,7 +509,7 @@ onMounted(() => {
         migratedAnswers = parsed.assessmentAnswers || {}
       }
     } catch { localStorage.removeItem('neuroprofile-v01') }
-    const first = { id: makeId(), name: suggestProfileName(), scores: migratedScores, answers: migratedAnswers, contextIntake: {}, contextAnswers: {}, contextScores: {}, contextSetupCompleted: false, completed: Object.keys(migratedAnswers).length > 0, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }
+    const first = { id: makeId(), name: suggestProfileName(), scores: migratedScores, answers: migratedAnswers, contextIntake: {}, contextAnswers: {}, contextScores: {}, contextWeights: {}, contextSetupCompleted: false, completed: Object.keys(migratedAnswers).length > 0, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }
     profiles.value = [first]
     activeProfileId.value = first.id
   }
@@ -490,6 +524,7 @@ onMounted(() => {
     Object.assign(contextIntake, selected.contextIntake || {})
     Object.assign(contextAnswers, selected.contextAnswers || {})
     Object.assign(contextScores, selected.contextScores || {})
+    Object.assign(contextWeights, selected.contextWeights || {})
     contextSetupCompleted.value = Boolean(selected.contextSetupCompleted)
   }
   hydratingProfile = false
@@ -501,6 +536,7 @@ watch(assessmentAnswers, () => { if (!hydratingProfile) saveLocal('') }, { deep:
 watch(contextIntake, () => { if (!hydratingProfile) saveLocal('') }, { deep: true, flush: 'sync' })
 watch(contextAnswers, () => { if (!hydratingProfile) saveLocal('') }, { deep: true, flush: 'sync' })
 watch(contextScores, () => { if (!hydratingProfile) saveLocal('') }, { deep: true, flush: 'sync' })
+watch(contextWeights, () => { if (!hydratingProfile) saveLocal('') }, { deep: true, flush: 'sync' })
 </script>
 
 <template>
@@ -749,17 +785,21 @@ watch(contextScores, () => { if (!hydratingProfile) saveLocal('') }, { deep: tru
           <div class="journey-meter"><i :style="{width: contextSetupCompleted ? `${20 + contextProgress.percentage * .8}%` : '4%'}"></i></div>
           <div v-if="!contextSetupCompleted" class="journey-next"><div><span>Recommended now</span><h2>Describe your worlds before answering context questions.</h2><p>This determines which settings apply and gives the questions realistic details without collecting identifying information.</p></div><button class="primary" @click="go('context-setup')">Describe my worlds →</button></div>
           <div v-else-if="!activeProfile?.completed" class="journey-next"><div><span>Recommended first assessment</span><h2>Create the general-self reference map.</h2><p>This gives every later context a consistent baseline. After completion, the first applicable world will be suggested automatically.</p></div><button class="primary" @click="beginAssessment">Measure general self →</button></div>
-          <div v-else-if="nextContext" class="journey-next"><div><span>{{ lastCompletedContextId ? `${contexts.find(c=>c.id===lastCompletedContextId)?.label} complete · next step` : 'Recommended next assessment' }}</span><h2>Continue with {{ nextContext.label.toLowerCase() }}.</h2><p>{{ nextContext.description }} · Ten recognisable situations, approximately three minutes.</p></div><button class="primary" @click="startContextAssessment(nextContext.id)">Start {{ nextContext.label.toLowerCase() }} →</button></div>
+          <div v-else-if="nextContext" class="journey-next"><div><span>{{ lastCompletedContextId ? `${contexts.find(c=>c.id===lastCompletedContextId)?.label} complete · next step` : 'Recommended next assessment' }}</span><h2>Continue with {{ nextContext.label.toLowerCase() }}.</h2><p>{{ nextContext.description }} · Twelve recognisable situations, approximately four minutes.</p></div><button class="primary" @click="startContextAssessment(nextContext.id)">Start {{ nextContext.label.toLowerCase() }} →</button></div>
           <div v-else class="journey-next complete"><div><span>Context set complete</span><h2>All applicable worlds have been measured.</h2><p>You can now compare shapes, revisit a context, or add short check-ins over time.</p></div><button class="secondary" @click="checkinOpen=true">Add a check-in</button></div>
         </div>
-        <div class="context-picker" role="tablist" aria-label="Select context">
-          <button v-for="context in availableContexts.filter(c=>c.id!=='self')" :key="context.id" :class="{active:compareContext===context.id}" @click="compareContext=context.id"><span>{{ context.icon }}</span><b>{{ context.label }}</b><small>{{ contextScores[context.id] ? '✓ Measured' : 'Not measured yet' }}</small></button>
+        <div v-if="measuredContexts.length" class="baseline-panel">
+          <div class="baseline-summary"><span class="section-kicker">Across-context baseline</span><h2>Your measured-worlds reference</h2><p>A weighted average of completed context assessments. It describes reported expression across measured settings; General self remains your separately measured self-perception.</p><div class="baseline-facts"><span><b>{{ measuredContexts.length }}</b> measured context{{ measuredContexts.length===1?'':'s' }}</span><span><b>{{ baselineMeanGap }}</b> average points from General self</span><span v-if="widestContextRange"><b>{{ widestContextRange.range }}</b> widest range · {{ widestContextRange.stat.label }}</span></div></div>
+          <div class="baseline-weights"><span>How representative is each context of ordinary life?</span><label v-for="context in measuredContexts" :key="context.id"><b>{{ context.label }}</b><select v-model.number="contextWeights[context.id]"><option :value="1">Occasional</option><option :value="2">Sometimes</option><option :value="3">Often</option><option :value="4">Most days</option></select></label><small>Weights change the baseline, never the original context scores. With one measured context, the baseline equals that context.</small></div>
         </div>
-        <div v-if="!contextMeasured" class="measure-context-callout"><div><span class="section-kicker">Illustrative estimate</span><h2>{{ compared.label }} has not been questioned yet.</h2><p>The preview currently uses a clearly marked example offset. Complete ten tailored scenarios to replace it with this profile’s answers.</p></div><button class="primary" @click="startContextAssessment(compareContext)">Measure {{ compared.label.toLowerCase() }} →</button></div>
-        <div v-else class="measured-context-bar"><span>✓ Based on 10 context-specific scenarios</span><button @click="startContextAssessment(compareContext)">Retake this context</button></div>
+        <div class="context-picker" role="tablist" aria-label="Select context">
+          <button v-for="context in availableContexts.filter(c=>c.id!=='self')" :key="context.id" :class="{active:compareContext===context.id}" @click="compareContext=context.id"><span>{{ context.icon }}</span><b>{{ context.label }}</b><small>{{ isContextComplete(context.id) ? '✓ Measured' : contextScores[context.id] ? 'Update needed' : 'Not measured yet' }}</small></button>
+        </div>
+        <div v-if="!contextMeasured" class="measure-context-callout"><div><span class="section-kicker">Illustrative estimate</span><h2>{{ compared.label }} has not been questioned yet.</h2><p>The preview currently uses a clearly marked example offset. Complete twelve tailored scenarios to replace it with this profile’s answers.</p></div><button class="primary" @click="startContextAssessment(compareContext)">Measure {{ compared.label.toLowerCase() }} →</button></div>
+        <div v-else class="measured-context-bar"><span>✓ Based on 12 context-specific scenarios</span><button @click="startContextAssessment(compareContext)">Retake this context</button></div>
         <div class="context-radar-panel">
-          <div><span class="section-kicker">Contrasting shapes</span><h2>General self and {{ compared.label.toLowerCase() }}</h2><p>The outline makes stable areas and context-dependent expression visible at once.</p><div class="radar-legend"><span><i class="base"></i>General self</span><span><i></i>{{ compared.label }}</span></div></div>
-          <div class="radar-wrap"><svg viewBox="0 0 320 320" role="img" :aria-label="`General profile contrasted with ${compared.label}`"><polygon v-for="level in [.25,.5,.75,1]" :key="level" :points="radarPolygon('self', level)" class="radar-gridline"/><line v-for="(_, index) in radarStats" :key="index" x1="160" y1="160" :x2="polarPoint(index, radarStats.length, 123).x" :y2="polarPoint(index, radarStats.length, 123).y" class="radar-axis"/><polygon :points="radarPolygon('self')" class="radar-shape radar-base"/><polygon :points="radarPolygon(compareContext)" class="radar-shape radar-current"/><text v-for="(stat,index) in radarStats" :key="stat.id" :x="polarPoint(index, radarStats.length, 145).x" :y="polarPoint(index, radarStats.length, 145).y" :text-anchor="polarPoint(index, radarStats.length, 145).x < 145 ? 'end' : polarPoint(index, radarStats.length, 145).x > 175 ? 'start' : 'middle'" dominant-baseline="middle" class="radar-label">{{ stat.label }}</text></svg></div>
+          <div><span class="section-kicker">Contrasting shapes</span><h2>General self and {{ compared.label.toLowerCase() }}</h2><p>The outline makes stable areas and context-dependent expression visible at once.</p><div class="radar-legend"><span><i class="base"></i>General self</span><span v-if="measuredContexts.length"><i class="baseline"></i>Across-context</span><span><i></i>{{ compared.label }}</span></div></div>
+          <div class="radar-wrap"><svg viewBox="0 0 320 320" role="img" :aria-label="`General profile contrasted with ${compared.label}`"><polygon v-for="level in [.25,.5,.75,1]" :key="level" :points="radarPolygon('self', level)" class="radar-gridline"/><line v-for="(_, index) in radarStats" :key="index" x1="160" y1="160" :x2="polarPoint(index, radarStats.length, 123).x" :y2="polarPoint(index, radarStats.length, 123).y" class="radar-axis"/><polygon :points="radarPolygon('self')" class="radar-shape radar-base"/><polygon v-if="measuredContexts.length" :points="baselineRadarPolygon()" class="radar-shape radar-baseline"/><polygon :points="radarPolygon(compareContext)" class="radar-shape radar-current"/><text v-for="(stat,index) in radarStats" :key="stat.id" :x="polarPoint(index, radarStats.length, 145).x" :y="polarPoint(index, radarStats.length, 145).y" :text-anchor="polarPoint(index, radarStats.length, 145).x < 145 ? 'end' : polarPoint(index, radarStats.length, 145).x > 175 ? 'start' : 'middle'" dominant-baseline="middle" class="radar-label">{{ stat.label }}</text></svg></div>
         </div>
         <div class="world-comparison">
           <div class="comparison-head"><div><span>Comparing</span><h2>General self <i>with</i> {{ compared.label }}</h2></div><div class="legend"><span><i class="general"></i>General</span><span><i class="contextual"></i>{{ compared.label }}</span></div></div>
@@ -797,6 +837,15 @@ watch(contextScores, () => { if (!hydratingProfile) saveLocal('') }, { deep: tru
             <article class="activation-card"><span>Activation × self-report</span><h2>Two signals, kept separate</h2><div class="signal-row"><span>Felt stress</span><i><b style="width:31%"></b></i><strong>Low</strong></div><div class="signal-row"><span>Physical activation</span><i><b style="width:72%"></b></i><strong>High</strong></div><p>A difference can reflect excitement, movement, caffeine, illness or sensor error. The application does not decide for you.</p></article>
           </div>
         </template>
+        <div class="wearable-instructions">
+          <div class="wearable-help-heading"><span class="section-kicker">How to get your data</span><h2>Start with an export you can inspect.</h2><p>Choose the smallest export that answers your question. Files stay on this device in the current prototype; exact location and raw GPS are excluded from the reduced profile export.</p></div>
+          <div class="wearable-help-grid">
+            <article><span>Garmin · recommended</span><h3>Wellness data</h3><ol><li>Open Garmin Connect in a web browser.</li><li>Open your profile, then Account Settings and Account Information.</li><li>Choose a date under Export Wellness Data.</li><li>Download the ZIP containing sleep, stress, HRV, steps and related FIT files.</li></ol><a href="https://support.garmin.com/en-US/?faq=W1TvTPW8JZ6LfJSfK512Q8" target="_blank" rel="noreferrer">Official Garmin export guide ↗</a></article>
+            <article><span>Garmin · longer history</span><h3>Full account archive</h3><ol><li>Open Garmin Account Data Management.</li><li>Choose Export Your Data, then Request Data Export.</li><li>Garmin emails a download link when the archive is ready.</li><li>Select only relevant wellness files before local import.</li></ol><a href="https://support.garmin.com/en-US/?faq=W1TvTPW8JZ6LfJSfK512Q8" target="_blank" rel="noreferrer">Official Garmin instructions ↗</a></article>
+            <article><span>Other ecosystems</span><h3>Apple Health or Google Fit</h3><p>Apple Health can export its full local health archive from the Health app’s profile menu. Google Fit data can be requested through Google Takeout. These formats need dedicated parsers before the prototype can analyse them.</p><div><a href="https://support.apple.com/en-us/108779" target="_blank" rel="noreferrer">Apple Health instructions ↗</a><a href="https://support.google.com/fit/answer/3024190?hl=en" target="_blank" rel="noreferrer">Google Fit export ↗</a></div></article>
+          </div>
+          <p class="wearable-api-note"><b>For a future automatic connection:</b> Garmin’s Health API provides all-day summaries such as sleep, heart rate, steps and stress, but it is a developer integration—not the anonymous local-file route used here. <a href="https://developer.garmin.com/gc-developer-program/health-api/" target="_blank" rel="noreferrer">Garmin Health API ↗</a></p>
+        </div>
         <div class="wearable-principles"><article><b>Compare with yourself</b><p>Personal baselines are usually more useful than population rankings for physiological signals.</p></article><article><b>Trends over moments</b><p>Repeated patterns matter more than a single night or a single vendor score.</p></article><article><b>Observation, not diagnosis</b><p>Consumer wearable data cannot determine mood, personality or medical conditions.</p></article></div>
       </section>
 
